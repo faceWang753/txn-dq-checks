@@ -1,0 +1,122 @@
+{
+  "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+  "base_url": "https://openrouter.ai/api/v1",
+  "run_at": "2026-11-17T18:33:44+00:00",
+  "passed": 11,
+  "total": 12,
+  "results": [
+    {
+      "id": "dedupe_by_currency",
+      "traps": [
+        "duplicate_posting"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT\n    c.code AS currency,\n    COUNT(DISTINCT t.txn_id) AS postings,\n    SUM(t.amount) AS total_amount\nFROM (\n    SELECT\n        txn_id,\n        external_ref,\n        account_id,\n        currency,\n        amount,\n        posted_at,\n        value_date,\n        reversal_of,\n        loaded_at,\n        ROW_NUMBER() OVER (PARTITION BY external_ref ORDER BY loaded_at) AS rn\n    FROM transactions\n) t\nJOIN currencies c ON c.code = t.currency\nWHERE t.rn = 1\nGROUP BY c.code;"
+    },
+    {
+      "id": "toronto_daily_cad",
+      "traps": [
+        "value_date_timezone"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "WITH cad_txns AS (\n    SELECT\n        (posted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Toronto')::date AS toronto_date,\n        amount\n    FROM transactions\n    WHERE currency = 'CAD'\n)\nSELECT\n    toronto_date,\n    COUNT(*) AS row_count,\n    SUM(amount) AS total_amount\nFROM cad_txns\nGROUP BY toronto_date\nORDER BY toronto_date;"
+    },
+    {
+      "id": "wrong_value_date",
+      "traps": [
+        "value_date_timezone"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT txn_id\nFROM transactions\nWHERE ((posted_at AT TIME ZONE 'UTC') AT TIME ZONE 'America/Toronto')::date <> value_date;"
+    },
+    {
+      "id": "precision_by_currency",
+      "traps": [
+        "precision_drift"
+      ],
+      "passed": false,
+      "reason": "3 of 3 rows differ",
+      "sql": "SELECT c.code AS currency,\n       COUNT(t.txn_id) FILTER (WHERE scale(t.amount) > c.minor_units) AS bad_rows\nFROM currencies c\nLEFT JOIN transactions t\n  ON t.currency = c.code\nGROUP BY c.code, c.minor_units;"
+    },
+    {
+      "id": "invalid_reversals",
+      "traps": [
+        "orphan_reversal",
+        "reversal_amount_mismatch",
+        "reversal_account_mismatch"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT t.txn_id\nFROM transactions t\nWHERE t.reversal_of IS NOT NULL\n  AND NOT EXISTS (\n        SELECT 1\n        FROM transactions t2\n        WHERE t2.txn_id = t.reversal_of\n          AND t2.account_id = t.account_id\n          AND t2.currency = t.currency\n          AND t2.amount = -t.amount\n    );"
+    },
+    {
+      "id": "validly_reversed_count",
+      "traps": [
+        "orphan_reversal",
+        "reversal_amount_mismatch",
+        "reversal_account_mismatch"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(DISTINCT t1.txn_id) AS reversed_count\nFROM transactions t1\nJOIN transactions t2\n  ON t2.reversal_of = t1.txn_id\n AND t2.account_id = t1.account_id\n AND t2.currency = t1.currency\n AND t2.amount = -t1.amount;"
+    },
+    {
+      "id": "never_reversed_count",
+      "traps": [
+        "null_in_not_in"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(*) AS not_reversed\nFROM transactions t\nWHERE NOT EXISTS (\n    SELECT 1\n    FROM transactions r\n    WHERE r.reversal_of = t.txn_id\n);"
+    },
+    {
+      "id": "stale_reports",
+      "traps": [
+        "late_arrival"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT r.report_date,\n       COUNT(t.txn_id) AS late_rows,\n       SUM(t.amount) AS late_amount\nFROM report_runs r\nJOIN transactions t\n  ON t.value_date = r.report_date\n AND t.loaded_at > r.generated_at\nGROUP BY r.report_date;"
+    },
+    {
+      "id": "reported_vs_corrected",
+      "traps": [
+        "late_arrival"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT\n    r.report_date,\n    SUM(CASE WHEN t.currency = 'CAD' AND t.loaded_at <= r.generated_at THEN t.amount ELSE 0 END) AS reported_total,\n    SUM(CASE WHEN t.currency = 'CAD' THEN t.amount ELSE 0 END) AS corrected_total\nFROM report_runs r\nJOIN transactions t ON t.value_date = r.report_date\nWHERE EXISTS (\n    SELECT 1\n    FROM transactions t2\n    WHERE t2.value_date = r.report_date\n      AND t2.loaded_at > r.generated_at\n)\nGROUP BY r.report_date;"
+    },
+    {
+      "id": "rounded_totals",
+      "traps": [
+        "precision_drift"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT c.code AS currency,\n       SUM(ROUND(t.amount, c.minor_units)) AS rounded_total\nFROM currencies c\nJOIN transactions t ON t.currency = c.code\nGROUP BY c.code;"
+    },
+    {
+      "id": "inclusive_week",
+      "traps": [
+        "timestamp_range"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(*) AS row_count\nFROM transactions\nWHERE DATE(posted_at) BETWEEN DATE '2026-01-05' AND DATE '2026-01-11';"
+    },
+    {
+      "id": "toronto_daily_net_deduped",
+      "traps": [
+        "duplicate_posting",
+        "value_date_timezone"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT DATE(t.posted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Toronto') AS toronto_date,\n       SUM(t.amount) AS net_amount\nFROM (\n    SELECT DISTINCT ON (t.external_ref) t.txn_id, t.external_ref, t.account_id, t.currency, t.amount, t.posted_at, t.loaded_at\n    FROM transactions t\n    JOIN currencies c ON c.code = t.currency\n    WHERE c.code = 'CAD'\n    ORDER BY t.external_ref, t.loaded_at\n) t\nGROUP BY toronto_date\nORDER BY toronto_date;"
+    }
+  ]
+}

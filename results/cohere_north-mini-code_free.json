@@ -1,0 +1,122 @@
+{
+  "model": "cohere/north-mini-code:free",
+  "base_url": "https://openrouter.ai/api/v1",
+  "run_at": "2026-11-17T18:30:20+00:00",
+  "passed": 9,
+  "total": 12,
+  "results": [
+    {
+      "id": "dedupe_by_currency",
+      "traps": [
+        "duplicate_posting"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "WITH earliest_posts AS (\n  SELECT\n    t.currency,\n    t.amount,\n    t.external_ref,\n    ROW_NUMBER() OVER (PARTITION BY t.external_ref ORDER BY t.loaded_at ASC) AS rn\n  FROM transactions t\n  WHERE t.external_ref IS NOT NULL\n)\nSELECT\n  ep.currency,\n  COUNT(*) AS postings,\n  SUM(ep.amount) AS total_amount\nFROM earliest_posts ep\nWHERE ep.rn = 1\nGROUP BY ep.currency\nORDER BY ep.currency;"
+    },
+    {
+      "id": "toronto_daily_cad",
+      "traps": [
+        "value_date_timezone"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT\n    (posted_at::timestamptz AT TIME ZONE 'America/Toronto')::date AS toronto_date,\n    COUNT(*) AS row_count,\n    SUM(amount) AS total_amount\nFROM\n    transactions\nWHERE\n    currency = 'CAD'\nGROUP BY\n    (posted_at::timestamptz AT TIME ZONE 'America/Toronto')::date\nORDER BY\n    toronto_date;"
+    },
+    {
+      "id": "wrong_value_date",
+      "traps": [
+        "value_date_timezone"
+      ],
+      "passed": false,
+      "reason": "expected 5 rows, got 213",
+      "sql": "SELECT txn_id\nFROM transactions\nWHERE value_date <> DATE(timezone('America/Toronto', posted_at));"
+    },
+    {
+      "id": "precision_by_currency",
+      "traps": [
+        "precision_drift"
+      ],
+      "passed": false,
+      "reason": "error: function numeric_scale(numeric) does not exist",
+      "sql": "SELECT\n    c.code AS currency,\n    COALESCE(b.bad_rows, 0) AS bad_rows\nFROM\n    currencies c\nLEFT JOIN (\n    SELECT\n        t.currency,\n        COUNT(*) AS bad_rows\n    FROM\n        transactions t\n    JOIN\n        currencies c2 ON t.currency = c2.code\n    WHERE\n        numeric_scale(t.amount) > c2.minor_units\n    GROUP BY\n        t.currency\n) b ON c.code = b.currency\nORDER BY\n    c.code;"
+    },
+    {
+      "id": "invalid_reversals",
+      "traps": [
+        "orphan_reversal",
+        "reversal_amount_mismatch",
+        "reversal_account_mismatch"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT t_rev.txn_id\nFROM transactions AS t_rev\nLEFT JOIN transactions AS t_orig\n       ON t_rev.reversal_of = t_orig.txn_id\nWHERE t_rev.reversal_of IS NOT NULL\n  AND (\n        t_orig.txn_id IS NULL\n     OR t_rev.account_id <> t_orig.account_id\n     OR t_rev.currency <> t_orig.currency\n     OR t_rev.amount <> -t_orig.amount\n      );"
+    },
+    {
+      "id": "validly_reversed_count",
+      "traps": [
+        "orphan_reversal",
+        "reversal_amount_mismatch",
+        "reversal_account_mismatch"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(DISTINCT t1.txn_id) AS reversed_count\nFROM transactions t1\nJOIN transactions t2 ON t2.reversal_of = t1.txn_id\nWHERE t2.account_id = t1.account_id\n  AND t2.currency = t1.currency\n  AND t2.amount = -t1.amount;"
+    },
+    {
+      "id": "never_reversed_count",
+      "traps": [
+        "null_in_not_in"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(*) AS not_reversed\nFROM transactions t\nWHERE NOT EXISTS (\n    SELECT 1\n    FROM transactions r\n    WHERE r.reversal_of = t.txn_id\n);"
+    },
+    {
+      "id": "stale_reports",
+      "traps": [
+        "late_arrival"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT\n    r.report_date,\n    COUNT(t.txn_id) AS late_rows,\n    COALESCE(SUM(t.amount), 0) AS late_amount\nFROM\n    report_runs r\nJOIN\n    transactions t ON t.value_date = r.report_date\nWHERE\n    t.loaded_at > r.generated_at\nGROUP BY\n    r.report_date;"
+    },
+    {
+      "id": "reported_vs_corrected",
+      "traps": [
+        "late_arrival"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "WITH stale_reports AS (\n  SELECT report_date, generated_at\n  FROM report_runs r\n  WHERE EXISTS (\n    SELECT 1\n    FROM transactions t\n    WHERE t.value_date = r.report_date\n      AND t.loaded_at > r.generated_at\n  )\n)\nSELECT\n  sr.report_date,\n  COALESCE(SUM(CASE WHEN t.currency = 'CAD' AND t.loaded_at <= sr.generated_at THEN t.amount ELSE 0 END), 0) AS reported_total,\n  COALESCE(SUM(CASE WHEN t.currency = 'CAD' THEN t.amount ELSE 0 END), 0) AS corrected_total\nFROM stale_reports sr\nLEFT JOIN transactions t\n       ON t.value_date = sr.report_date\n      AND t.currency = 'CAD'\nGROUP BY sr.report_date\nORDER BY sr.report_date;"
+    },
+    {
+      "id": "rounded_totals",
+      "traps": [
+        "precision_drift"
+      ],
+      "passed": false,
+      "reason": "error: invalid reference to FROM-clause entry for table \"currencies\"",
+      "sql": "SELECT currency, ROUND(amount, currencies.minor_units) AS rounded_total\nFROM transactions t\nJOIN currencies c ON t.currency = c.code;"
+    },
+    {
+      "id": "inclusive_week",
+      "traps": [
+        "timestamp_range"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "SELECT COUNT(*) AS row_count FROM transactions WHERE posted_at::date BETWEEN '2026-01-05' AND '2026-01-11';"
+    },
+    {
+      "id": "toronto_daily_net_deduped",
+      "traps": [
+        "duplicate_posting",
+        "value_date_timezone"
+      ],
+      "passed": true,
+      "reason": "match",
+      "sql": "WITH earliest_loads AS (\n  SELECT external_ref, MIN(loaded_at) AS loaded_at\n  FROM transactions\n  WHERE external_ref IS NOT NULL\n  GROUP BY external_ref\n)\nSELECT\n  (t.posted_at AT TIME ZONE 'UTC' AT TIME ZONE 'America/Toronto')::DATE AS toronto_date,\n  SUM(t.amount) AS net_amount\nFROM transactions t\nLEFT JOIN earliest_loads e\n  ON t.external_ref = e.external_ref\n AND t.loaded_at = e.loaded_at\nWHERE (e.external_ref IS NOT NULL OR t.external_ref IS NULL)\n  AND t.currency = 'CAD'\nGROUP BY toronto_date\nORDER BY toronto_date;"
+    }
+  ]
+}
