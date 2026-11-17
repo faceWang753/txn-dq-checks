@@ -53,6 +53,33 @@ Run these in order against an empty database (`<db>` is `postgres` or `mysql`):
 5. `tests/verify.sql`, which should return no rows
 6. `sql/<db>/04_run_checks.sql`, which writes to `dq_results` and prints counts per check
 
+## Grading SQL written by a model
+
+`eval/` holds 12 natural-language questions over the trap database and a grader that runs a model's SQL and compares its result set with a reference query's. PostgreSQL only for now.
+
+- Each question says exactly what to compute and which columns to return, so there is one right answer. The model still has to notice, for example, that "Toronto calendar date" is not `value_date`, or that `NOT IN` over a nullable column returns nothing.
+- Model SQL runs as the role `agent_ro`, which can only read the three data tables. Every query runs in a read-only transaction that is rolled back, with a 5-second timeout.
+- Result sets are compared as multisets of rows: row order and column names are ignored; column order, duplicates and values are not.
+- Each task also carries a plausible wrong query. The self-test checks that it fails, which proves the task can tell a right answer from a wrong one on this data.
+
+Check the harness and tasks (no model or API key needed):
+
+```bash
+python eval/harness.py selftest
+```
+
+Grade a model through any OpenAI-compatible endpoint (OpenRouter by default). Put the key in the `LLM_API_KEY` environment variable:
+
+```bash
+python eval/harness.py run --model <model-id>
+```
+
+Results are written to `results/<model-id>.json` with the SQL the model wrote for each question. Add `--runs 3` to ask each question three times.
+
+First results for two open-weight models, with the queries that failed and why, are in [RESULTS.md](RESULTS.md).
+
+What this does not cover yet: the model gets one attempt per question with the schema in the prompt and cannot explore the database; nothing is graded on MySQL; and 12 tasks is too few to rank models with any confidence.
+
 ## The sample data
 
 - 641 transactions for January 2026. All timestamps are UTC; `value_date` is the business date in America/Toronto.
@@ -78,8 +105,8 @@ Run these in order against an empty database (`<db>` is `postgres` or `mysql`):
 
 ## Roadmap
 
-1. **Agent tasks.** Natural-language questions over the trap database (for example, "net CAD outflow per account on 9 January, Toronto time"), each with a reference query and expected result.
-2. **Execution-based grader.** Run an agent's SQL read-only inside a rolled-back transaction, then compare result sets with `EXCEPT ALL` in both directions, scoring pass/fail per task.
+1. **Agent tasks.** Done for a first set of 12; see `eval/tasks.py`. Next: more tasks per trap and a MySQL variant.
+2. **Execution-based grader.** Done; see `eval/harness.py`.
 3. **Baselines.** Measure several models with prompting alone, and record which traps each one falls into.
 4. **Post-training.** Use the grader as a verifiable reward to fine-tune a small open model, and measure whether it improves on held-out traps without regressing on clean data.
 
