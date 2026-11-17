@@ -31,6 +31,7 @@ TIMEOUT_MS = 5000
 MAX_ROWS = 10000
 MAX_TRIES = 6                                   # per model call, with backoff
 RETRY_STATUS = (408, 429, 500, 502, 503, 504)
+MAX_TOKENS = 4000  # stops runaway generations
 
 SYSTEM_PROMPT = (
     "You write PostgreSQL 16 queries. Reply with exactly one SQL query in a ```sql fenced "
@@ -111,6 +112,7 @@ def call_model(base_url, api_key, model, question, temperature):
     body = {
         "model": model,
         "temperature": temperature,
+        "max_tokens": MAX_TOKENS,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"{SCHEMA_DOC}\nQuestion: {question}"},
