@@ -128,12 +128,13 @@ def cmd_selftest(_args):
         if not ok:
             failures.append(name)
 
+    # Each guard must fail for its own reason; a connection error must not count as a pass.
     _, err = run_sql("DELETE FROM transactions")
-    check("writes are rejected", err is not None, err or "DELETE succeeded")
+    check("writes are rejected", "read-only" in (err or ""), err or "DELETE succeeded")
     _, err = run_sql("SELECT * FROM expected_issues")
-    check("answer key is not readable", err is not None, err or "SELECT succeeded")
+    check("answer key is not readable", "permission denied" in (err or ""), err or "SELECT succeeded")
     _, err = run_sql("SELECT pg_sleep(30)")
-    check("slow queries time out", err is not None, err or "no timeout")
+    check("slow queries time out", "statement timeout" in (err or ""), err or "no timeout")
 
     for task in TASKS:
         rows, err = run_sql(task["reference"])
