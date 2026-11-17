@@ -1,0 +1,28 @@
+# Local databases with schema, seed data, expected issues and check views loaded on first start.
+# Throwaway passwords for local use only.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: txn_dq
+    ports: ["5432:5432"]
+    volumes:
+      - ./sql/postgres/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./data/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./tests/expected_issues.sql:/docker-entrypoint-initdb.d/03_expected_issues.sql:ro
+      - ./sql/postgres/03_checks.sql:/docker-entrypoint-initdb.d/04_checks.sql:ro
+      - ./:/work:ro
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: localdev
+      MYSQL_DATABASE: txn_dq
+    ports: ["3306:3306"]
+    volumes:
+      - ./sql/mysql/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./data/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./tests/expected_issues.sql:/docker-entrypoint-initdb.d/03_expected_issues.sql:ro
+      - ./sql/mysql/03_checks.sql:/docker-entrypoint-initdb.d/04_checks.sql:ro
+      - ./:/work:ro
