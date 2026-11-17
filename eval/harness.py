@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -28,6 +29,8 @@ from tasks import SCHEMA_DOC, TASKS
 DSN = os.environ.get("AGENT_DSN", "postgresql://agent_ro:localdev@localhost:5432/txn_dq")
 TIMEOUT_MS = 5000
 MAX_ROWS = 10000
+MAX_TRIES = 6                                   # per model call, with backoff
+RETRY_STATUS = (408, 429, 500, 502, 503, 504)
 
 SYSTEM_PROMPT = (
     "You write PostgreSQL 16 queries. Reply with exactly one SQL query in a ```sql fenced "
@@ -100,10 +103,14 @@ def extract_sql(text):
     return (blocks[-1] if blocks else (text or "")).strip()
 
 
-def call_model(base_url, api_key, model, question):
+class ModelError(Exception):
+    """The API did not return an answer. Not the model's fault, so never graded as a fail."""
+
+
+def call_model(base_url, api_key, model, question, temperature):
     body = {
         "model": model,
-        "temperature": 0,
+        "temperature": temperature,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"{SCHEMA_DOC}\nQuestion: {question}"},
@@ -114,9 +121,21 @@ def call_model(base_url, api_key, model, question):
         data=json.dumps(body).encode(),
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=180) as resp:
-        data = json.load(resp)
-    return data["choices"][0]["message"].get("content") or ""
+    delay = 5
+    for attempt in range(MAX_TRIES):
+        last_try = attempt == MAX_TRIES - 1
+        try:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                data = json.load(resp)
+            return data["choices"][0]["message"].get("content") or ""
+        except urllib.error.HTTPError as exc:
+            if exc.code not in RETRY_STATUS or last_try:
+                raise ModelError(f"HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, KeyError, IndexError, ValueError) as exc:
+            if last_try:
+                raise ModelError(f"{type(exc).__name__}: {exc}") from exc
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
 
 
 def cmd_selftest(_args):
@@ -157,17 +176,32 @@ def cmd_run(args):
         return 2
     results = []
     for task in TASKS:
-        try:
-            reply = call_model(args.base_url, api_key, args.model, task["question"])
-            sql = extract_sql(reply)
+        attempts = []
+        for _ in range(args.runs):
+            try:
+                sql = extract_sql(call_model(args.base_url, api_key, args.model, task["question"], args.temperature))
+            except ModelError as exc:
+                attempts.append({"status": "api_error", "reason": str(exc), "sql": ""})
+                continue
             passed, reason = grade(task, sql)
-        except (urllib.error.URLError, KeyError, IndexError, ValueError, TimeoutError) as exc:
-            sql, passed, reason = "", False, f"model call failed: {exc}"
-        print(f"{'PASS' if passed else 'FAIL'} {task['id']}  {'' if passed else reason}")
-        results.append({"id": task["id"], "traps": task["traps"], "passed": passed, "reason": reason, "sql": sql})
+            attempts.append({"status": "pass" if passed else "fail", "reason": reason, "sql": sql})
+        n_pass = sum(a["status"] == "pass" for a in attempts)
+        n_err = sum(a["status"] == "api_error" for a in attempts)
+        fails = [a["reason"] for a in attempts if a["status"] == "fail"]
+        print(f"{n_pass}/{len(attempts) - n_err} {task['id']}"
+              f"{f'  ({n_err} API errors)' if n_err else ''}{'  ' + fails[0] if fails else ''}", flush=True)
+        results.append({"id": task["id"], "traps": task["traps"], "attempts": attempts})
 
-    n_pass = sum(r["passed"] for r in results)
-    print(f"\n{args.model}: {n_pass}/{len(results)} passed")
+    every = [a for r in results for a in r["attempts"]]
+    n_pass = sum(a["status"] == "pass" for a in every)
+    n_err = sum(a["status"] == "api_error" for a in every)
+    n_solid = sum(
+        1 for r in results
+        if any(a["status"] != "api_error" for a in r["attempts"])
+        and all(a["status"] != "fail" for a in r["attempts"])
+    )
+    print(f"\n{args.model}: {n_pass}/{len(every) - n_err} graded attempts passed, {n_err} API errors, "
+          f"{n_solid}/{len(results)} tasks passed on every graded attempt")
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / (re.sub(r"[^A-Za-z0-9._-]+", "_", args.model) + ".json")
@@ -175,8 +209,13 @@ def cmd_run(args):
         "model": args.model,
         "base_url": args.base_url,
         "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "passed": n_pass,
-        "total": len(results),
+        "runs_per_task": args.runs,
+        "temperature": args.temperature,
+        "attempts_passed": n_pass,
+        "attempts_graded": len(every) - n_err,
+        "api_errors": n_err,
+        "tasks_always_passed": n_solid,
+        "tasks": len(results),
         "results": results,
     }, indent=2) + "\n")
     print(f"wrote {out_file}")
@@ -191,6 +230,8 @@ def main():
     run.add_argument("--model", required=True, help="model id as the API expects it")
     run.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1"),
                      help="any OpenAI-compatible chat completions endpoint")
+    run.add_argument("--runs", type=int, default=1, help="attempts per question")
+    run.add_argument("--temperature", type=float, default=0.0)
     run.add_argument("--out", default="results", help="directory for the result file")
     args = parser.parse_args()
     return {"selftest": cmd_selftest, "run": cmd_run}[args.command](args)
