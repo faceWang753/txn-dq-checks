@@ -2,7 +2,9 @@
   "name": "txn-dq-checks",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "features": {
-    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": false }
+    "ghcr.io/devcontainers/features/docker-in-docker:2": { "moby": false },
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
   },
+  "postCreateCommand": "pip install -r eval/requirements.txt",
   "postStartCommand": "docker compose up -d"
 }
