@@ -51,7 +51,9 @@ def run_sql(sql):
                 with conn.cursor() as cur:
                     cur.execute("SET TRANSACTION READ ONLY")
                     cur.execute(f"SET LOCAL statement_timeout = {TIMEOUT_MS}")
-                    cur.execute(sql)
+                    # prepare=True uses the extended protocol, which refuses more than one
+                    # statement; otherwise "COMMIT; ..." would escape the timeout.
+                    cur.execute(sql, prepare=True)
                     if cur.description is None:
                         return None, "statement returned no result set"
                     rows = cur.fetchmany(MAX_ROWS + 1)
@@ -156,6 +158,8 @@ def cmd_selftest(_args):
     check("answer key is not readable", "permission denied" in (err or ""), err or "SELECT succeeded")
     _, err = run_sql("SELECT pg_sleep(30)")
     check("slow queries time out", "statement timeout" in (err or ""), err or "no timeout")
+    _, err = run_sql("COMMIT; SELECT pg_sleep(30)")
+    check("a second statement is rejected", "multiple commands" in (err or ""), err or "both statements ran")
 
     for task in TASKS:
         rows, err = run_sql(task["reference"])
