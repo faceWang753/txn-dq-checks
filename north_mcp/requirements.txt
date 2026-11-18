@@ -1,0 +1,2 @@
+psycopg[binary]>=3.2,<4
+north-mcp-python-sdk @ git+https://github.com/cohere-ai/north-mcp-python-sdk.git

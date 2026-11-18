@@ -80,6 +80,10 @@ First results for two open-weight models, with the queries that failed and why, 
 
 What this does not cover yet: the model gets one attempt per question with the schema in the prompt and cannot explore the database; nothing is graded on MySQL; and 12 tasks is too few to rank models with any confidence.
 
+## Letting an agent query as a named user
+
+`north_mcp/` is an MCP server for Cohere North that runs an agent's SQL inside the database entitlement of the person asking, with default deny, row-level security, one read-only statement per call and an audit log. It comes with tests that prove each guard blocks what it claims to. See [north_mcp/README.md](north_mcp/README.md).
+
 ## The sample data
 
 - 641 transactions for January 2026. All timestamps are UTC; `value_date` is the business date in America/Toronto.
