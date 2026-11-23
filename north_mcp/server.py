@@ -12,6 +12,7 @@ selects the database role could be forged.
 
 import os
 
+from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token
 from north_mcp_python_sdk import NorthMCPServer
 
@@ -26,18 +27,26 @@ def _caller_email():
     return token.claims.get("email") if token else None
 
 
+def _ok_or_tool_error(result):
+    """Return a successful result. Raise for a denied or failed call, so the MCP result
+    carries isError=True and a client does not have to parse the payload to know."""
+    if result["status"] != "ok":
+        raise ToolError(f"{result['status']}: {result['error']}")
+    return result
+
+
 @mcp.tool()
 def describe_access() -> dict:
     """Show which tables the current user can query and how their access is scoped.
     Call this before writing SQL."""
-    return guard.describe_access(_caller_email())
+    return _ok_or_tool_error(guard.describe_access(_caller_email()))
 
 
 @mcp.tool()
 def run_query(sql: str) -> dict:
     """Run one read-only PostgreSQL SELECT as the current user and return the rows.
     Rows the user is not entitled to are filtered out by the database."""
-    return guard.run_query(_caller_email(), sql)
+    return _ok_or_tool_error(guard.run_query(_caller_email(), sql))
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ North user -> X-North-ID-Token -> email -> access map -> database role -> one re
 - **The database enforces scope.** Each entitlement group is a PostgreSQL login role with row-level security (`roles.sql`). The server never parses or rewrites the SQL, so there is no filter for a clever query to slip past.
 - **One statement per call**, in a read-only transaction that is rolled back, with a 5-second timeout and a 200-row cap.
 - **Every call is logged** to `audit.jsonl` with the user, role, SQL, outcome, row count and duration. Denied calls are logged too.
+- **Refusals are flagged.** A denied or failed call comes back as an MCP tool error (`isError: true`) with the reason in the text, so a client does not have to parse the payload to know it failed.
 
 The demo has two roles over the trap database in this repository: `north_desk_cad` sees CAD transactions only, and `north_risk_all` sees every currency.
 
