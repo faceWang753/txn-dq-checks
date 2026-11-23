@@ -35,9 +35,14 @@ def client(email):
     return Client(StreamableHttpTransport(BASE + "/mcp", headers=headers))
 
 
-async def count_rows(email):
+async def query(email, sql="SELECT count(*) FROM transactions"):
+    """Return the raw tool result, so the checks can read the MCP error flag."""
     async with client(email) as c:
-        return (await c.call_tool("run_query", {"sql": "SELECT count(*) FROM transactions"})).data
+        return await c.call_tool("run_query", {"sql": sql}, raise_on_error=False)
+
+
+def text(result):
+    return result.content[0].text if result.content else ""
 
 
 async def run_checks():
@@ -47,18 +52,24 @@ async def run_checks():
     check("server exposes two tools", tools == ["describe_access", "run_query"], tools)
     check("describe_access reports the caller's role", access.get("role") == "north_risk_all", access.get("role"))
 
-    risk = await count_rows("risk.officer@example.com")
-    desk = await count_rows("cad.analyst@example.com")
-    stranger = await count_rows("someone.else@example.com")
-    check("risk officer gets all rows", risk["status"] == "ok", risk.get("rows"))
+    risk = await query("risk.officer@example.com")
+    desk = await query("cad.analyst@example.com")
+    stranger = await query("someone.else@example.com")
+    check("risk officer gets all rows", not risk.is_error and risk.data["status"] == "ok", risk.data.get("rows"))
     check("CAD analyst gets fewer rows from the same SQL",
-          desk["status"] == "ok" and 0 < desk["rows"][0][0] < risk["rows"][0][0], desk.get("rows"))
-    check("user with no entitlement is denied", stranger["status"] == "denied", stranger.get("error"))
+          not desk.is_error and 0 < desk.data["rows"][0][0] < risk.data["rows"][0][0], desk.data.get("rows"))
+    check("user with no entitlement is denied, flagged as a tool error",
+          stranger.is_error and "denied" in text(stranger), text(stranger))
+
+    refused = await query("risk.officer@example.com", "SELECT * FROM expected_issues")
+    check("a query the database refuses is flagged as a tool error",
+          refused.is_error and "permission denied" in text(refused), text(refused))
 
     # The SDK lets a request with no token through to the tool with an empty identity,
     # so the default deny in guard.py is what keeps the data closed.
-    anonymous = await count_rows(None)
-    check("request without a token gets no data", anonymous["status"] == "denied", anonymous.get("error"))
+    anonymous = await query(None)
+    check("request without a token gets no data, flagged as a tool error",
+          anonymous.is_error and "denied" in text(anonymous), text(anonymous))
 
 
 def main():
