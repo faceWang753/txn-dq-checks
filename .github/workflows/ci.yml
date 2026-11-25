@@ -1,0 +1,61 @@
+# Runs the README's own commands, so a green run backs the README's claims.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start PostgreSQL and MySQL
+        run: docker compose up -d
+
+      - name: Wait for both databases to finish loading
+        run: |
+          for i in $(seq 1 60); do
+            if docker compose exec -T postgres psql -h 127.0.0.1 -U postgres -d txn_dq -Atc "select 1" >/dev/null 2>&1 \
+              && docker compose exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -plocaldev --silent >/dev/null 2>&1; then
+              echo "ready after $i tries"; exit 0
+            fi
+            sleep 3
+          done
+          docker compose logs --tail 80
+          exit 1
+
+      - name: PostgreSQL checks find every planted error and nothing else
+        run: |
+          out=$(docker compose exec -T postgres psql -U postgres -d txn_dq -At -v ON_ERROR_STOP=1 -f /work/tests/verify.sql)
+          echo "$out"
+          test -z "$out"
+
+      - name: MySQL checks find every planted error and nothing else
+        run: |
+          out=$(docker compose exec -T mysql sh -c "mysql -N -uroot -plocaldev txn_dq < /work/tests/verify.sql")
+          echo "$out"
+          test -z "$out"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python requirements
+        run: pip install -r eval/requirements.txt -r north_mcp/requirements.txt
+
+      - name: Grader self-test (every reference query passes, every wrong query fails)
+        run: python eval/harness.py selftest
+
+      - name: Guard tests for the MCP server
+        run: python north_mcp/prove.py
+
+      - name: End-to-end test of the MCP server as three users
+        run: python north_mcp/e2e.py
