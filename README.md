@@ -1,5 +1,7 @@
 # txn-dq-checks
 
+[![CI](https://github.com/faceWang753/txn-dq-checks/actions/workflows/ci.yml/badge.svg)](https://github.com/faceWang753/txn-dq-checks/actions/workflows/ci.yml)
+
 Financial data fails quietly. A replayed message, a UTC date used as a business date, or a reversal booked to the wrong account all pass schema validation, and the first sign of trouble is a report that doesn't reconcile.
 
 This repository has five SQL checks that catch those problems, plus a synthetic "trap database" of January 2026 transactions with 26 planted errors and the list of rows each check should flag. Everything runs on PostgreSQL and MySQL 8, and `tests/verify.sql` proves each check finds every planted error and nothing else.
